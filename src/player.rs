@@ -1,7 +1,7 @@
 use std::f32::consts::PI;
 
 use avian3d::prelude::{
-    Collider, CollisionLayers, Friction, LinearVelocity, RigidBody, SpatialQuery,
+    Collider, CollisionLayers, Friction, GravityScale, LinearVelocity, RigidBody, SpatialQuery,
     SpatialQueryFilter,
 };
 use bevy::{
@@ -24,14 +24,19 @@ use bevy::{
 
 use crate::{
     GameLayers,
-    climbing::{HAND_HOLD_DETECTION_CONFIG_FORWARD, generate_hand_holds},
+    climbing::{
+        ClimbType, HAND_HOLD_DETECTION_CONFIG_FORWARD, HandHold, PLAYER_CLIMB_POS_LERP_RATE,
+        PLAYER_CLIMB_POS_OFFSET, PLAYER_CLIMB_ROT_LERP_RATE, generate_hand_holds, get_hand_hold,
+        hand_holds_similar,
+    },
 };
 
 pub const CAM_SENSITIVITY: f32 = 0.002;
 pub const CAM_CLAMP_MIN: f32 = -PI / 2.0;
 pub const CAM_CLAMP_MAX: f32 = PI / 2.0;
 
-pub const JUMP_FORCE: f32 = 10.0;
+pub const JUMP_FORCE: f32 = 4.0;
+pub const GRAVITY_MULTIPLIER: f32 = 1.5;
 
 pub const IDLE_HM_PARAMS: HorizontalMovementParams = HorizontalMovementParams::new(0.0, 10.0, 15.0);
 pub const WALK_HM_PARAMS: HorizontalMovementParams = HorizontalMovementParams::new(5.0, 10.0, 15.0);
@@ -50,6 +55,8 @@ impl Plugin for PlayerPlugin {
                 idle.run_if(is_player_state(PlayerMovementState::Idle)),
                 walk.run_if(is_player_state(PlayerMovementState::Walking)),
                 fall.run_if(is_player_state(PlayerMovementState::Falling)),
+                climb_idle.run_if(is_player_state(PlayerMovementState::ClimbIdle)),
+                climb.run_if(is_player_state(PlayerMovementState::Climbing)),
                 draw_gizmos,
             ),
         );
@@ -61,12 +68,14 @@ pub struct PlayerBodyBundle {
     tag: PlayerBody,
     rb: RigidBody,
     linear_vel: LinearVelocity,
+    gravity: GravityScale,
     friction: Friction,
     collider: Collider,
     transform: Transform,
     layers: CollisionLayers,
     state: PlayerMovementStateComponent,
     input_dir: InputDir,
+    current_hand_hold: CurrentHandHold,
 }
 
 #[derive(Bundle)]
@@ -75,16 +84,20 @@ pub struct PlayerCamBundle {
     cam: Camera3d,
     transform: Transform,
     rot: PlayerCamRot,
+    can_rotate_player: CanRotatePlayer,
 }
 
 #[derive(Component)]
 struct PlayerCam;
 
 #[derive(Component)]
-pub struct PlayerBody;
+struct PlayerCamRot(Vec2);
 
 #[derive(Component)]
-struct PlayerCamRot(Vec2);
+struct CanRotatePlayer(bool);
+
+#[derive(Component)]
+pub struct PlayerBody;
 
 #[derive(Component)]
 struct PlayerMovementStateComponent(PlayerMovementState);
@@ -92,23 +105,30 @@ struct PlayerMovementStateComponent(PlayerMovementState);
 #[derive(Component)]
 struct InputDir(Vec2);
 
+#[derive(Component)]
+struct CurrentHandHold(Option<HandHold>);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PlayerMovementState {
     Idle,
     Walking,
     Falling,
+    ClimbIdle,
+    Climbing,
 }
 fn spawn_player(mut commands: Commands) {
     commands.spawn(PlayerBodyBundle {
         tag: PlayerBody,
         rb: RigidBody::Dynamic,
         linear_vel: LinearVelocity(vec3(0.0, 0.0, 0.0)),
+        gravity: GravityScale(GRAVITY_MULTIPLIER),
         friction: Friction::new(0.0),
         collider: Collider::capsule(0.5, 2.0),
         transform: Transform::from_xyz(0.0, 15.0, 0.0),
         layers: CollisionLayers::new(GameLayers::Default, GameLayers::Ground),
         state: PlayerMovementStateComponent(PlayerMovementState::Idle),
         input_dir: InputDir(Vec2::ZERO),
+        current_hand_hold: CurrentHandHold(None),
     });
 
     commands.spawn(PlayerCamBundle {
@@ -116,6 +136,7 @@ fn spawn_player(mut commands: Commands) {
         cam: Camera3d::default(),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
         rot: PlayerCamRot(Vec2::ZERO),
+        can_rotate_player: CanRotatePlayer(true),
     });
 }
 fn move_player_cam(
@@ -129,6 +150,7 @@ fn rotate_player_cam(
     mut body_transform: Single<&mut Transform, (With<PlayerBody>, Without<PlayerCam>)>,
     mut cam_rot: Single<&mut PlayerCamRot, With<PlayerCam>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
+    can_rotate_player: Single<&CanRotatePlayer, With<PlayerCam>>,
 ) {
     let look = vec2(
         -mouse_motion.delta.y * CAM_SENSITIVITY,
@@ -139,7 +161,10 @@ fn rotate_player_cam(
     cam_rot.0.x = cam_rot.0.x.clamp(CAM_CLAMP_MIN, CAM_CLAMP_MAX);
 
     cam_transform.rotation = Quat::from_euler(EulerRot::YXZ, cam_rot.0.y, cam_rot.0.x, 0.0);
-    body_transform.rotation = Quat::from_euler(EulerRot::YXZ, cam_rot.0.y, 0.0, 0.0);
+
+    if can_rotate_player.0 {
+        body_transform.rotation = Quat::from_euler(EulerRot::YXZ, cam_rot.0.y, 0.0, 0.0);
+    }
 }
 fn is_grounded(query: &SpatialQuery, transform: &Single<&Transform, With<PlayerBody>>) -> bool {
     let origin = transform.translation - Vec3::Y;
@@ -234,6 +259,10 @@ fn fall(
     mut state: Single<&mut PlayerMovementStateComponent, With<PlayerBody>>,
     mut linear_vel: Single<&mut LinearVelocity, With<PlayerBody>>,
     time: Res<Time>,
+    mut current_hand_hold: Single<&mut CurrentHandHold, With<PlayerBody>>,
+    input: Res<ButtonInput<KeyCode>>,
+    mut gravity: Single<&mut GravityScale, With<PlayerBody>>,
+    mut can_rotate_player: Single<&mut CanRotatePlayer, With<PlayerCam>>,
 ) {
     move_horizontal(
         FALL_HM_PARAMS,
@@ -246,6 +275,152 @@ fn fall(
     if is_grounded(&query, &transform) {
         state.0 = PlayerMovementState::Idle;
         return;
+    }
+
+    if input.pressed(KeyCode::Space) {
+        let hand_holds = &generate_hand_holds(
+            HAND_HOLD_DETECTION_CONFIG_FORWARD,
+            transform.translation,
+            transform.rotation,
+            &query,
+        );
+
+        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Start) {
+            current_hand_hold.0 = Some(*hand_hold);
+            gravity.0 = 0.0;
+            linear_vel.0 = Vec3::ZERO;
+            can_rotate_player.0 = false;
+            state.0 = PlayerMovementState::Climbing;
+            return;
+        }
+    }
+}
+fn climb_idle(
+    query: SpatialQuery,
+    transform: Single<&Transform, With<PlayerBody>>,
+    mut state: Single<&mut PlayerMovementStateComponent, With<PlayerBody>>,
+    mut current_hand_hold: Single<&mut CurrentHandHold, With<PlayerBody>>,
+    input_dir: Single<&InputDir, With<PlayerBody>>,
+    input: Res<ButtonInput<KeyCode>>,
+    mut gravity: Single<&mut GravityScale, With<PlayerBody>>,
+    mut can_rotate_player: Single<&mut CanRotatePlayer, With<PlayerCam>>,
+) {
+    if input.pressed(KeyCode::ShiftLeft) {
+        current_hand_hold.0 = None;
+        gravity.0 = GRAVITY_MULTIPLIER;
+        can_rotate_player.0 = true;
+        state.0 = PlayerMovementState::Falling;
+        return;
+    }
+
+    if input_dir.0.y > 0.1 {
+        let hand_holds = &generate_hand_holds(
+            HAND_HOLD_DETECTION_CONFIG_FORWARD,
+            transform.translation,
+            transform.rotation,
+            &query,
+        );
+
+        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Up) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+    }
+
+    if input_dir.0.y < -0.1 {
+        let hand_holds = &generate_hand_holds(
+            HAND_HOLD_DETECTION_CONFIG_FORWARD,
+            transform.translation,
+            transform.rotation,
+            &query,
+        );
+
+        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Down) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+    }
+
+    if input_dir.0.x > 0.1 {
+        let hand_holds = &generate_hand_holds(
+            HAND_HOLD_DETECTION_CONFIG_FORWARD,
+            transform.translation,
+            transform.rotation,
+            &query,
+        );
+
+        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Right) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+    }
+
+    if input_dir.0.x < -0.1 {
+        let hand_holds = &generate_hand_holds(
+            HAND_HOLD_DETECTION_CONFIG_FORWARD,
+            transform.translation,
+            transform.rotation,
+            &query,
+        );
+
+        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Left) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+    }
+}
+fn climb(
+    mut transform: Single<&mut Transform, With<PlayerBody>>,
+    mut state: Single<&mut PlayerMovementStateComponent, With<PlayerBody>>,
+    time: Res<Time>,
+    current_hand_hold: Single<&CurrentHandHold, With<PlayerBody>>,
+) {
+    if let Some(hand_hold) = current_hand_hold.0 {
+        let target_pos = get_player_pos_relative_to_hand_hold(&hand_hold);
+
+        let lerped_pos = lerp_vec3(
+            transform.translation,
+            target_pos,
+            PLAYER_CLIMB_POS_LERP_RATE * time.delta_secs(),
+        );
+
+        let target_rot_y = Quat::look_to_lh(hand_hold.forward_normal, Vec3::Y)
+            .to_euler(EulerRot::YXZ)
+            .0;
+
+        let lerped_rot_y = lerp_f32(
+            transform.rotation.to_euler(EulerRot::YXZ).0,
+            target_rot_y,
+            PLAYER_CLIMB_ROT_LERP_RATE * time.delta_secs(),
+        );
+
+        transform.translation = lerped_pos;
+        transform.rotation = Quat::from_euler(EulerRot::YXZ, target_rot_y, 0.0, 0.0);
+
+        if (transform.translation - target_pos).length() < 0.01 {
+            state.0 = PlayerMovementState::ClimbIdle;
+            return;
+        }
     }
 }
 fn update_input_dir(
@@ -329,7 +504,10 @@ pub fn lerp_vec3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
 
     vec3(lerped_x, lerped_y, lerped_z)
 }
-
+pub fn get_player_pos_relative_to_hand_hold(hand_hold: &HandHold) -> Vec3 {
+    hand_hold.pos + hand_hold.forward_normal * PLAYER_CLIMB_POS_OFFSET
+        - hand_hold.up_normal * PLAYER_CLIMB_POS_OFFSET.y
+}
 fn draw_gizmos(
     transform: Single<&Transform, With<PlayerBody>>,
     mut gizmos: Gizmos,
@@ -339,12 +517,14 @@ fn draw_gizmos(
         HAND_HOLD_DETECTION_CONFIG_FORWARD,
         transform.translation,
         transform.rotation,
-        query,
+        &query,
     );
 
-    for point in points {
+    let point = get_hand_hold(&points, &transform, ClimbType::Left);
+
+    if let Some(x) = point {
         gizmos.sphere(
-            Isometry3d::from_translation(point.pos),
+            Isometry3d::from_translation(x.pos),
             0.1,
             Color::srgb_u8(255, 0, 0),
         );

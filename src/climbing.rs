@@ -1,4 +1,4 @@
-use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::{Collider, SpatialQuery, SpatialQueryFilter};
 use bevy::{
     ecs::{query::With, system::Single},
     math::{Dir3, Quat, USizeVec2, Vec2, Vec3, usizevec2, vec2, vec3},
@@ -7,32 +7,165 @@ use bevy::{
 
 use crate::{
     GameLayers,
-    player::{PlayerBody, lerp_f32},
+    player::{PlayerBody, get_player_pos_relative_to_hand_hold, lerp_f32},
 };
+
+pub const PLAYER_CLIMB_POS_OFFSET: Vec3 = vec3(0.0, 1.75, 1.0);
+pub const PLAYER_CLIMB_POS_LERP_RATE: f32 = 5.0;
+pub const PLAYER_CLIMB_ROT_LERP_RATE: f32 = 5.0;
+
+pub const MAX_CLIMB_START_DIST: f32 = 0.5;
+pub const MAX_CLIMB_VERTICAL_XZ_DIST: f32 = 0.5;
+pub const MAX_CLIMB_SIDE_Y_DIST: f32 = 0.1;
+
+#[derive(Clone, Copy)]
+pub enum ClimbType {
+    Start,
+    Up,
+    Down,
+    Right,
+    Left,
+}
 
 pub const HAND_HOLD_DETECTION_CONFIG_FORWARD: HandHoldDetectionConfig =
     HandHoldDetectionConfig::new(
-        2.0,
+        3.0,
         0.01,
         0.5,
         usizevec2(9, 25),
-        vec2(2.0, 1.75),
-        vec3(0.0, 0.75, 0.5),
+        vec2(1.0, 1.75),
+        vec3(0.0, 1.75, 0.0),
     );
 
-fn get_hand_holds_forward(
-    query: SpatialQuery,
+pub fn get_hand_hold<'a>(
+    hand_holds: &'a Vec<HandHold>,
     transform: &Single<&Transform, With<PlayerBody>>,
-) -> Vec<HandHold> {
-    let mut hand_holds = vec![];
+    climb_type: ClimbType,
+) -> Option<&'a HandHold> {
+    match climb_type {
+        ClimbType::Start => get_hand_hold_start(hand_holds, transform),
+        ClimbType::Up => get_hand_hold_vertical(hand_holds, transform, true),
+        ClimbType::Down => get_hand_hold_vertical(hand_holds, transform, false),
+        ClimbType::Right => get_hand_hold_side(hand_holds, transform, true),
+        ClimbType::Left => get_hand_hold_side(hand_holds, transform, false),
+    }
+}
+fn get_hand_hold_start<'a>(
+    hand_holds: &'a Vec<HandHold>,
+    transform: &Single<&Transform, With<PlayerBody>>,
+) -> Option<&'a HandHold> {
+    let mut best_hand_hold = None;
+    let mut best_score = f32::MIN;
 
-    hand_holds
+    let player_hold_pos = transform.translation
+        + transform.right() * PLAYER_CLIMB_POS_OFFSET.x
+        + transform.up() * PLAYER_CLIMB_POS_OFFSET.y
+        + transform.forward() * PLAYER_CLIMB_POS_OFFSET.z;
+
+    for hand_hold in hand_holds {
+        let dist = (hand_hold.pos - player_hold_pos).length();
+
+        if dist > MAX_CLIMB_START_DIST {
+            continue;
+        }
+
+        let score = -dist;
+
+        if score > best_score {
+            best_score = score;
+            best_hand_hold = Some(hand_hold);
+        }
+    }
+
+    best_hand_hold
+}
+fn get_hand_hold_vertical<'a>(
+    hand_holds: &'a Vec<HandHold>,
+    transform: &Single<&Transform, With<PlayerBody>>,
+    up: bool,
+) -> Option<&'a HandHold> {
+    let mut best_hand_hold = None;
+    let mut best_score = f32::MIN;
+
+    let player_hold_pos = transform.translation
+        + transform.right() * PLAYER_CLIMB_POS_OFFSET.x
+        + transform.up() * PLAYER_CLIMB_POS_OFFSET.y
+        + transform.forward() * PLAYER_CLIMB_POS_OFFSET.z;
+
+    for hand_hold in hand_holds {
+        let dist_xz = -(vec3(hand_hold.pos.x, 0.0, hand_hold.pos.z)
+            - vec3(player_hold_pos.x, 0.0, player_hold_pos.z))
+        .length();
+
+        if dist_xz > MAX_CLIMB_VERTICAL_XZ_DIST {
+            continue;
+        }
+
+        let dist_y = if up {
+            hand_hold.pos.y - player_hold_pos.y
+        } else {
+            player_hold_pos.y - hand_hold.pos.y
+        };
+
+        let score = dist_xz + dist_y;
+
+        if score > best_score {
+            best_score = score;
+            best_hand_hold = Some(hand_hold);
+        }
+    }
+
+    best_hand_hold
+}
+fn get_hand_hold_side<'a>(
+    hand_holds: &'a Vec<HandHold>,
+    transform: &Single<&Transform, With<PlayerBody>>,
+    right: bool,
+) -> Option<&'a HandHold> {
+    let mut best_hand_hold = None;
+    let mut best_score = f32::MIN;
+
+    let player_hold_pos = transform.translation
+        + transform.right() * PLAYER_CLIMB_POS_OFFSET.x
+        + transform.up() * PLAYER_CLIMB_POS_OFFSET.y
+        + transform.forward() * PLAYER_CLIMB_POS_OFFSET.z;
+
+    for hand_hold in hand_holds {
+        let dist_y = (hand_hold.pos.y - player_hold_pos.y).abs();
+
+        if dist_y > MAX_CLIMB_SIDE_Y_DIST {
+            continue;
+        }
+
+        let dir = (hand_hold.pos - player_hold_pos).normalize();
+
+        let dot = transform.right().dot(dir);
+
+        let valid = if right { dot > 0.1 } else { dot < 0.1 };
+
+        if !valid {
+            continue;
+        }
+
+        let dist_xz = (vec3(hand_hold.pos.x, 0.0, hand_hold.pos.z)
+            - vec3(player_hold_pos.x, 0.0, player_hold_pos.z))
+        .length();
+
+        let score = dist_xz - dist_y;
+
+        if score > best_score {
+            best_score = score;
+            best_hand_hold = Some(hand_hold);
+        }
+    }
+
+    best_hand_hold
 }
 pub fn generate_hand_holds(
     config: HandHoldDetectionConfig,
     pos: Vec3,
     rot: Quat,
-    query: SpatialQuery,
+    query: &SpatialQuery,
 ) -> Vec<HandHold> {
     let mut hand_holds = vec![];
 
@@ -69,7 +202,9 @@ pub fn generate_hand_holds(
 
                         let hand_hold = HandHold::new(pos, forward_normal, up_normal);
 
-                        hand_holds.push(hand_hold);
+                        if is_hand_hold_valid(&hand_hold, query) {
+                            hand_holds.push(hand_hold);
+                        }
                     }
                 }
             }
@@ -77,6 +212,21 @@ pub fn generate_hand_holds(
     }
 
     hand_holds
+}
+fn is_hand_hold_valid(hand_hold: &HandHold, query: &SpatialQuery) -> bool {
+    let filter = SpatialQueryFilter::default().with_mask(GameLayers::Ground);
+
+    let check_1 = query
+        .shape_intersections(
+            &Collider::capsule(0.5, 2.0),
+            get_player_pos_relative_to_hand_hold(hand_hold),
+            Quat::IDENTITY,
+            &filter,
+        )
+        .len()
+        == 0;
+
+    check_1
 }
 fn get_ray_origins(config: HandHoldDetectionConfig, pos: Vec3, rot: Quat) -> Vec<Vec<Vec3>> {
     let mut origins =
@@ -91,8 +241,8 @@ fn get_ray_origins(config: HandHoldDetectionConfig, pos: Vec3, rot: Quat) -> Vec
 
     for x in 0..config.ray_amount.x {
         for y in 0..config.ray_amount.y {
-            let tx = x as f32 / config.ray_amount.x as f32;
-            let ty = y as f32 / config.ray_amount.y as f32;
+            let tx = x as f32 / (config.ray_amount.x - 1) as f32;
+            let ty = y as f32 / (config.ray_amount.y - 1) as f32;
 
             let offset_x = lerp_f32(-half_width, half_width, tx);
             let offset_y = lerp_f32(-half_height, half_height, ty);
@@ -109,6 +259,7 @@ fn get_ray_origins(config: HandHoldDetectionConfig, pos: Vec3, rot: Quat) -> Vec
 
     origins
 }
+#[derive(Clone, Copy)]
 pub struct HandHold {
     pub pos: Vec3,
     pub forward_normal: Vec3,
@@ -152,4 +303,7 @@ impl HandHoldDetectionConfig {
             ray_offset,
         }
     }
+}
+pub fn hand_holds_similar(a: &HandHold, b: &HandHold) -> bool {
+    (a.pos - b.pos).length_squared() < 0.1
 }

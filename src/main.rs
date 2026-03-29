@@ -48,6 +48,7 @@ fn setup_map(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let general_mat = materials.add(Color::srgb_u8(124, 144, 255));
+    let ledge_mat = materials.add(Color::srgb_u8(200, 100, 100));
 
     commands.spawn((
         RigidBody::Static,
@@ -65,15 +66,30 @@ fn setup_map(
     commands.spawn((
         RigidBody::Static,
         Friction::new(0.0),
-        Collider::cuboid(2.0, 3.0, 0.5),
-        Mesh3d(meshes.add(Cuboid::from_size(vec3(2.0, 3.0, 0.5)))),
-        MeshMaterial3d(general_mat.clone()),
-        Transform::from_xyz(0.0, 1.5, 5.0),
+        Collider::cuboid(5.0, 10.0, 1.0),
+        Mesh3d(meshes.add(Cuboid::from_size(vec3(5.0, 10.0, 1.0)))),
+        MeshMaterial3d(ledge_mat.clone()),
+        Transform::from_xyz(0.0, 5.0, 5.0),
         CollisionLayers::new(
             GameLayers::Ground,
             [GameLayers::Default, GameLayers::Ground],
         ),
     ));
+
+    for y in 0..12 {
+        commands.spawn((
+            RigidBody::Static,
+            Friction::new(0.0),
+            Collider::cuboid(2.0, 0.25, 0.5),
+            Mesh3d(meshes.add(Cuboid::from_size(vec3(2.0, 0.25, 0.5)))),
+            MeshMaterial3d(general_mat.clone()),
+            Transform::from_xyz(0.0, 4.0 + y as f32 * 0.5, 4.7),
+            CollisionLayers::new(
+                GameLayers::Ground,
+                [GameLayers::Default, GameLayers::Ground],
+            ),
+        ));
+    }
 
     commands.spawn((
         PointLight {
