@@ -1,4 +1,7 @@
-use avian3d::prelude::{Collider, SpatialQuery, SpatialQueryFilter};
+use avian3d::{
+    parry::math::VectorExt,
+    prelude::{Collider, SpatialQuery, SpatialQueryFilter},
+};
 use bevy::{
     ecs::{query::With, system::Single},
     math::{Dir3, Quat, USizeVec2, Vec2, Vec3, usizevec2, vec2, vec3},
@@ -13,10 +16,14 @@ use crate::{
 pub const PLAYER_CLIMB_POS_OFFSET: Vec3 = vec3(0.0, 1.75, 1.0);
 pub const PLAYER_CLIMB_POS_LERP_RATE: f32 = 5.0;
 pub const PLAYER_CLIMB_ROT_LERP_RATE: f32 = 5.0;
+pub const PLAYER_MANTLE_POS_LERP_RATE: f32 = 5.0;
 
 pub const MAX_CLIMB_START_DIST: f32 = 0.5;
 pub const MAX_CLIMB_VERTICAL_XZ_DIST: f32 = 0.5;
-pub const MAX_CLIMB_SIDE_Y_DIST: f32 = 0.1;
+pub const MAX_CLIMB_SIDE_Y_DIST: f32 = 0.5;
+pub const MAX_HAND_HOLD_ANGLE: f32 = 30.0;
+pub const MANTLE_FORWARD_OFFSET: f32 = 0.5;
+pub const MAX_MANTLE_DIST: f32 = 0.5;
 
 #[derive(Clone, Copy)]
 pub enum ClimbType {
@@ -29,13 +36,22 @@ pub enum ClimbType {
 
 pub const HAND_HOLD_DETECTION_CONFIG_FORWARD: HandHoldDetectionConfig =
     HandHoldDetectionConfig::new(
-        3.0,
+        1.5,
         0.01,
         0.5,
         usizevec2(9, 25),
         vec2(1.0, 1.75),
         vec3(0.0, 1.75, 0.0),
     );
+
+pub const MANTLE_DETECTION_CONFIG: HandHoldDetectionConfig = HandHoldDetectionConfig::new(
+    1.5,
+    0.5,
+    0.5,
+    usizevec2(5, 25),
+    vec2(0.25, 1.0),
+    vec3(0.0, 1.5, 0.0),
+);
 
 pub fn get_hand_hold<'a>(
     hand_holds: &'a Vec<HandHold>,
@@ -226,7 +242,9 @@ fn is_hand_hold_valid(hand_hold: &HandHold, query: &SpatialQuery) -> bool {
         .len()
         == 0;
 
-    check_1
+    let check_2 = hand_hold.up_normal.angle(Vec3::Y) < MAX_HAND_HOLD_ANGLE;
+
+    check_1 && check_2
 }
 fn get_ray_origins(config: HandHoldDetectionConfig, pos: Vec3, rot: Quat) -> Vec<Vec<Vec3>> {
     let mut origins =
@@ -258,6 +276,64 @@ fn get_ray_origins(config: HandHoldDetectionConfig, pos: Vec3, rot: Quat) -> Vec
     }
 
     origins
+}
+pub fn get_mantle_hand_holds(
+    transform: &Single<&Transform, With<PlayerBody>>,
+    query: &SpatialQuery,
+) -> Vec<HandHold> {
+    let hand_holds = generate_hand_holds(
+        MANTLE_DETECTION_CONFIG,
+        transform.translation,
+        transform.rotation,
+        &query,
+    );
+
+    let filter = SpatialQueryFilter::default().with_mask(GameLayers::Ground);
+
+    let mut final_hand_holds = vec![];
+
+    for hand_hold in hand_holds {
+        let pos = hand_hold.pos + Vec3::Y * 1.6 + -hand_hold.forward_normal * MANTLE_FORWARD_OFFSET;
+
+        if query
+            .shape_intersections(&Collider::capsule(0.5, 2.0), pos, Quat::IDENTITY, &filter)
+            .len()
+            == 0
+        {
+            final_hand_holds.push(hand_hold);
+        }
+    }
+
+    final_hand_holds
+}
+pub fn get_mantle_hand_hold<'a>(
+    hand_holds: &'a Vec<HandHold>,
+    transform: &Single<&Transform, With<PlayerBody>>,
+) -> Option<&'a HandHold> {
+    let mut best_hand_hold = None;
+    let mut best_score = f32::MIN;
+
+    let player_hold_pos = transform.translation
+        + transform.right() * PLAYER_CLIMB_POS_OFFSET.x
+        + transform.up() * PLAYER_CLIMB_POS_OFFSET.y
+        + transform.forward() * PLAYER_CLIMB_POS_OFFSET.z;
+
+    for hand_hold in hand_holds {
+        let dist = (hand_hold.pos - player_hold_pos).length();
+
+        if dist > MAX_MANTLE_DIST {
+            continue;
+        }
+
+        let score = -dist;
+
+        if score > best_score {
+            best_score = score;
+            best_hand_hold = Some(hand_hold);
+        }
+    }
+
+    best_hand_hold
 }
 #[derive(Clone, Copy)]
 pub struct HandHold {

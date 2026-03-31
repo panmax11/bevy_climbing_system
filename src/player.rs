@@ -1,8 +1,8 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, fmt::Display};
 
 use avian3d::prelude::{
-    Collider, CollisionLayers, Friction, GravityScale, LinearVelocity, RigidBody, SpatialQuery,
-    SpatialQueryFilter,
+    Collider, CollisionLayers, Friction, LinearVelocity, LockedAxes, RigidBody, RigidBodyDisabled,
+    SpatialQuery, SpatialQueryFilter,
 };
 use bevy::{
     app::{App, Plugin, Startup, Update},
@@ -11,6 +11,7 @@ use bevy::{
     ecs::{
         bundle::Bundle,
         component::Component,
+        entity::{ContainsEntity, Entity},
         query::{With, Without},
         schedule::IntoScheduleConfigs,
         system::{Commands, Res, Single},
@@ -25,9 +26,10 @@ use bevy::{
 use crate::{
     GameLayers,
     climbing::{
-        ClimbType, HAND_HOLD_DETECTION_CONFIG_FORWARD, HandHold, PLAYER_CLIMB_POS_LERP_RATE,
-        PLAYER_CLIMB_POS_OFFSET, PLAYER_CLIMB_ROT_LERP_RATE, generate_hand_holds, get_hand_hold,
-        hand_holds_similar,
+        ClimbType, HAND_HOLD_DETECTION_CONFIG_FORWARD, HandHold, MANTLE_DETECTION_CONFIG,
+        MANTLE_FORWARD_OFFSET, PLAYER_CLIMB_POS_LERP_RATE, PLAYER_CLIMB_POS_OFFSET,
+        PLAYER_CLIMB_ROT_LERP_RATE, PLAYER_MANTLE_POS_LERP_RATE, generate_hand_holds,
+        get_hand_hold, get_mantle_hand_hold, get_mantle_hand_holds, hand_holds_similar,
     },
 };
 
@@ -36,7 +38,6 @@ pub const CAM_CLAMP_MIN: f32 = -PI / 2.0;
 pub const CAM_CLAMP_MAX: f32 = PI / 2.0;
 
 pub const JUMP_FORCE: f32 = 4.0;
-pub const GRAVITY_MULTIPLIER: f32 = 1.5;
 
 pub const IDLE_HM_PARAMS: HorizontalMovementParams = HorizontalMovementParams::new(0.0, 10.0, 15.0);
 pub const WALK_HM_PARAMS: HorizontalMovementParams = HorizontalMovementParams::new(5.0, 10.0, 15.0);
@@ -57,6 +58,7 @@ impl Plugin for PlayerPlugin {
                 fall.run_if(is_player_state(PlayerMovementState::Falling)),
                 climb_idle.run_if(is_player_state(PlayerMovementState::ClimbIdle)),
                 climb.run_if(is_player_state(PlayerMovementState::Climbing)),
+                mantle.run_if(is_player_state(PlayerMovementState::Mantling)),
                 draw_gizmos,
             ),
         );
@@ -68,8 +70,8 @@ pub struct PlayerBodyBundle {
     tag: PlayerBody,
     rb: RigidBody,
     linear_vel: LinearVelocity,
-    gravity: GravityScale,
     friction: Friction,
+    locked_axes: LockedAxes,
     collider: Collider,
     transform: Transform,
     layers: CollisionLayers,
@@ -115,14 +117,30 @@ pub enum PlayerMovementState {
     Falling,
     ClimbIdle,
     Climbing,
+    Mantling,
+}
+impl Display for PlayerMovementState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayerMovementState::Idle => f.write_str("Idle"),
+            PlayerMovementState::Walking => f.write_str("Walking"),
+            PlayerMovementState::Falling => f.write_str("Falling"),
+            PlayerMovementState::ClimbIdle => f.write_str("ClimbIdle"),
+            PlayerMovementState::Climbing => f.write_str("Climbing"),
+            PlayerMovementState::Mantling => f.write_str("Mantling"),
+        }
+    }
 }
 fn spawn_player(mut commands: Commands) {
     commands.spawn(PlayerBodyBundle {
         tag: PlayerBody,
         rb: RigidBody::Dynamic,
         linear_vel: LinearVelocity(vec3(0.0, 0.0, 0.0)),
-        gravity: GravityScale(GRAVITY_MULTIPLIER),
         friction: Friction::new(0.0),
+        locked_axes: LockedAxes::new()
+            .lock_rotation_x()
+            .lock_rotation_y()
+            .lock_rotation_z(),
         collider: Collider::capsule(0.5, 2.0),
         transform: Transform::from_xyz(0.0, 15.0, 0.0),
         layers: CollisionLayers::new(GameLayers::Default, GameLayers::Ground),
@@ -261,8 +279,9 @@ fn fall(
     time: Res<Time>,
     mut current_hand_hold: Single<&mut CurrentHandHold, With<PlayerBody>>,
     input: Res<ButtonInput<KeyCode>>,
-    mut gravity: Single<&mut GravityScale, With<PlayerBody>>,
     mut can_rotate_player: Single<&mut CanRotatePlayer, With<PlayerCam>>,
+    mut commands: Commands,
+    player: Single<Entity, With<PlayerBody>>,
 ) {
     move_horizontal(
         FALL_HM_PARAMS,
@@ -287,7 +306,7 @@ fn fall(
 
         if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Start) {
             current_hand_hold.0 = Some(*hand_hold);
-            gravity.0 = 0.0;
+            commands.entity(player.entity()).insert(RigidBodyDisabled);
             linear_vel.0 = Vec3::ZERO;
             can_rotate_player.0 = false;
             state.0 = PlayerMovementState::Climbing;
@@ -302,18 +321,29 @@ fn climb_idle(
     mut current_hand_hold: Single<&mut CurrentHandHold, With<PlayerBody>>,
     input_dir: Single<&InputDir, With<PlayerBody>>,
     input: Res<ButtonInput<KeyCode>>,
-    mut gravity: Single<&mut GravityScale, With<PlayerBody>>,
     mut can_rotate_player: Single<&mut CanRotatePlayer, With<PlayerCam>>,
+    mut commands: Commands,
+    player: Single<Entity, With<PlayerBody>>,
 ) {
     if input.pressed(KeyCode::ShiftLeft) {
         current_hand_hold.0 = None;
-        gravity.0 = GRAVITY_MULTIPLIER;
+        commands
+            .entity(player.entity())
+            .remove::<RigidBodyDisabled>();
         can_rotate_player.0 = true;
         state.0 = PlayerMovementState::Falling;
         return;
     }
 
     if input_dir.0.y > 0.1 {
+        let mantle_hand_holds = get_mantle_hand_holds(&transform, &query);
+
+        if let Some(hand_hold) = get_mantle_hand_hold(&mantle_hand_holds, &transform) {
+            current_hand_hold.0 = Some(*hand_hold);
+            state.0 = PlayerMovementState::Mantling;
+            return;
+        }
+
         let hand_holds = &generate_hand_holds(
             HAND_HOLD_DETECTION_CONFIG_FORWARD,
             transform.translation,
@@ -394,6 +424,7 @@ fn climb(
     mut state: Single<&mut PlayerMovementStateComponent, With<PlayerBody>>,
     time: Res<Time>,
     current_hand_hold: Single<&CurrentHandHold, With<PlayerBody>>,
+    mut linear_vel: Single<&mut LinearVelocity, With<PlayerBody>>,
 ) {
     if let Some(hand_hold) = current_hand_hold.0 {
         let target_pos = get_player_pos_relative_to_hand_hold(&hand_hold);
@@ -418,7 +449,51 @@ fn climb(
         transform.rotation = Quat::from_euler(EulerRot::YXZ, target_rot_y, 0.0, 0.0);
 
         if (transform.translation - target_pos).length() < 0.01 {
+            linear_vel.0 = Vec3::ZERO;
             state.0 = PlayerMovementState::ClimbIdle;
+            return;
+        }
+    }
+}
+fn mantle(
+    mut transform: Single<&mut Transform, With<PlayerBody>>,
+    mut state: Single<&mut PlayerMovementStateComponent, With<PlayerBody>>,
+    time: Res<Time>,
+    mut current_hand_hold: Single<&mut CurrentHandHold, With<PlayerBody>>,
+    mut can_rotate_player: Single<&mut CanRotatePlayer, With<PlayerCam>>,
+    mut commands: Commands,
+    player: Single<Entity, With<PlayerBody>>,
+) {
+    if let Some(hand_hold) = current_hand_hold.0 {
+        let target_pos =
+            hand_hold.pos + Vec3::Y * 1.5 + -hand_hold.forward_normal * MANTLE_FORWARD_OFFSET;
+
+        let lerped_pos = lerp_vec3(
+            transform.translation,
+            target_pos,
+            PLAYER_MANTLE_POS_LERP_RATE * time.delta_secs(),
+        );
+
+        let target_rot_y = Quat::look_to_lh(hand_hold.forward_normal, Vec3::Y)
+            .to_euler(EulerRot::YXZ)
+            .0;
+
+        let lerped_rot_y = lerp_f32(
+            transform.rotation.to_euler(EulerRot::YXZ).0,
+            target_rot_y,
+            PLAYER_CLIMB_ROT_LERP_RATE * time.delta_secs(),
+        );
+
+        transform.translation = lerped_pos;
+        transform.rotation = Quat::from_euler(EulerRot::YXZ, target_rot_y, 0.0, 0.0);
+
+        if (transform.translation - target_pos).length() < 0.01 {
+            current_hand_hold.0 = None;
+            commands
+                .entity(player.entity())
+                .remove::<RigidBodyDisabled>();
+            can_rotate_player.0 = true;
+            state.0 = PlayerMovementState::Idle;
             return;
         }
     }
@@ -512,21 +587,38 @@ fn draw_gizmos(
     transform: Single<&Transform, With<PlayerBody>>,
     mut gizmos: Gizmos,
     query: SpatialQuery,
+    linear_vel: Single<&LinearVelocity, With<PlayerBody>>,
+    state: Single<&PlayerMovementStateComponent, With<PlayerBody>>,
 ) {
-    let points = generate_hand_holds(
-        HAND_HOLD_DETECTION_CONFIG_FORWARD,
-        transform.translation,
-        transform.rotation,
-        &query,
-    );
+    let points = get_mantle_hand_holds(&transform, &query);
 
-    let point = get_hand_hold(&points, &transform, ClimbType::Left);
+    let point = get_mantle_hand_hold(&points, &transform);
 
     if let Some(x) = point {
+        let pos = x.pos + Vec3::Y * 1.6 + -x.forward_normal * MANTLE_FORWARD_OFFSET;
+
         gizmos.sphere(
             Isometry3d::from_translation(x.pos),
             0.1,
             Color::srgb_u8(255, 0, 0),
+        );
+
+        gizmos.sphere(
+            Isometry3d::from_translation(pos - Vec3::Y),
+            0.5,
+            Color::srgb_u8(0, 255, 0),
+        );
+
+        gizmos.sphere(
+            Isometry3d::from_translation(pos),
+            0.5,
+            Color::srgb_u8(0, 255, 0),
+        );
+
+        gizmos.sphere(
+            Isometry3d::from_translation(pos + Vec3::Y),
+            0.5,
+            Color::srgb_u8(0, 255, 0),
         );
     }
 }
