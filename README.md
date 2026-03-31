@@ -19,7 +19,7 @@ I made a similar project a year ago, but that was in Unity engine, and the code 
 
 ❌ Ability to shimmy around or in a corner (e.g. switching sides)
 
-❌ Mantle onto an object
+✅ Mantle onto an object
 
 ❌ Animated Arms Model
 
