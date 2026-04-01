@@ -435,18 +435,8 @@ fn climb(
             PLAYER_CLIMB_POS_LERP_RATE * time.delta_secs(),
         );
 
-        let target_rot_y = Quat::look_to_lh(hand_hold.forward_normal, Vec3::Y)
-            .to_euler(EulerRot::YXZ)
-            .0;
-
-        let lerped_rot_y = lerp_f32(
-            transform.rotation.to_euler(EulerRot::YXZ).0,
-            target_rot_y,
-            PLAYER_CLIMB_ROT_LERP_RATE * time.delta_secs(),
-        );
-
         transform.translation = lerped_pos;
-        transform.rotation = Quat::from_euler(EulerRot::YXZ, target_rot_y, 0.0, 0.0);
+        transform.look_to(-hand_hold.forward_normal, Vec3::Y);
 
         if (transform.translation - target_pos).length() < 0.01 {
             linear_vel.0 = Vec3::ZERO;
@@ -474,18 +464,8 @@ fn mantle(
             PLAYER_MANTLE_POS_LERP_RATE * time.delta_secs(),
         );
 
-        let target_rot_y = Quat::look_to_lh(hand_hold.forward_normal, Vec3::Y)
-            .to_euler(EulerRot::YXZ)
-            .0;
-
-        let lerped_rot_y = lerp_f32(
-            transform.rotation.to_euler(EulerRot::YXZ).0,
-            target_rot_y,
-            PLAYER_CLIMB_ROT_LERP_RATE * time.delta_secs(),
-        );
-
         transform.translation = lerped_pos;
-        transform.rotation = Quat::from_euler(EulerRot::YXZ, target_rot_y, 0.0, 0.0);
+        transform.look_to(-hand_hold.forward_normal, Vec3::Y);
 
         if (transform.translation - target_pos).length() < 0.01 {
             current_hand_hold.0 = None;
@@ -580,7 +560,7 @@ pub fn lerp_vec3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     vec3(lerped_x, lerped_y, lerped_z)
 }
 pub fn get_player_pos_relative_to_hand_hold(hand_hold: &HandHold) -> Vec3 {
-    hand_hold.pos + hand_hold.forward_normal * PLAYER_CLIMB_POS_OFFSET
+    hand_hold.pos + hand_hold.forward_normal * PLAYER_CLIMB_POS_OFFSET.z
         - hand_hold.up_normal * PLAYER_CLIMB_POS_OFFSET.y
 }
 fn draw_gizmos(
@@ -590,35 +570,24 @@ fn draw_gizmos(
     linear_vel: Single<&LinearVelocity, With<PlayerBody>>,
     state: Single<&PlayerMovementStateComponent, With<PlayerBody>>,
 ) {
-    let points = get_mantle_hand_holds(&transform, &query);
+    let points = generate_hand_holds(
+        HAND_HOLD_DETECTION_CONFIG_FORWARD,
+        transform.translation,
+        transform.rotation,
+        &query,
+    );
 
-    let point = get_mantle_hand_hold(&points, &transform);
-
-    if let Some(x) = point {
-        let pos = x.pos + Vec3::Y * 1.6 + -x.forward_normal * MANTLE_FORWARD_OFFSET;
-
+    for point in points {
         gizmos.sphere(
-            Isometry3d::from_translation(x.pos),
+            Isometry3d::from_translation(point.pos),
             0.1,
             Color::srgb_u8(255, 0, 0),
         );
-
-        gizmos.sphere(
-            Isometry3d::from_translation(pos - Vec3::Y),
-            0.5,
-            Color::srgb_u8(0, 255, 0),
-        );
-
-        gizmos.sphere(
-            Isometry3d::from_translation(pos),
-            0.5,
-            Color::srgb_u8(0, 255, 0),
-        );
-
-        gizmos.sphere(
-            Isometry3d::from_translation(pos + Vec3::Y),
-            0.5,
-            Color::srgb_u8(0, 255, 0),
-        );
     }
+
+    gizmos.ray(
+        transform.translation,
+        transform.forward().as_vec3(),
+        Color::srgb_u8(0, 255, 0),
+    );
 }

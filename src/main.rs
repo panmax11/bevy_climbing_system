@@ -13,7 +13,7 @@ use bevy::{
     color::Color,
     ecs::system::{Commands, ResMut, Single},
     light::PointLight,
-    math::{primitives::Cuboid, vec3},
+    math::{EulerRot, Quat, primitives::Cuboid, vec3},
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     transform::components::Transform,
@@ -70,6 +70,24 @@ fn setup_map(
         Mesh3d(meshes.add(Cuboid::from_size(vec3(5.0, 10.0, 1.0)))),
         MeshMaterial3d(ledge_mat.clone()),
         Transform::from_xyz(0.0, 5.0, 5.0),
+        CollisionLayers::new(
+            GameLayers::Ground,
+            [GameLayers::Default, GameLayers::Ground],
+        ),
+    ));
+
+    commands.spawn((
+        RigidBody::Static,
+        Friction::new(0.0),
+        Collider::cuboid(2.5, 4.0, 2.5),
+        Mesh3d(meshes.add(Cuboid::from_size(vec3(2.5, 4.0, 2.5)))),
+        MeshMaterial3d(ledge_mat.clone()),
+        Transform::from_xyz(5.0, 2.0, 0.0).with_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            45.0,
+            0.0,
+            0.0,
+        )),
         CollisionLayers::new(
             GameLayers::Ground,
             [GameLayers::Default, GameLayers::Ground],
