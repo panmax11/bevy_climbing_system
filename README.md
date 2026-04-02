@@ -19,7 +19,7 @@ Smaller tweaks
 
 ## Instructions
 ### Here's how to use the current features:
-W/A/S/D - Move (on surface or while climbing)
-Mouse - Look around
-Space - Jump (keep holding mid air to grab onto an available ledge)
-Shift - Drop from a ledge
+W/A/S/D - Move (on surface or while climbing)  
+Mouse - Look around  
+Space - Jump (keep holding mid air to grab onto an available ledge)  
+Shift - Drop from a ledge  
