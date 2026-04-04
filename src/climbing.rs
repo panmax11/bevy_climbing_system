@@ -1,10 +1,11 @@
 use avian3d::{
+    math::PI,
     parry::math::VectorExt,
     prelude::{Collider, SpatialQuery, SpatialQueryFilter},
 };
 use bevy::{
     ecs::{query::With, system::Single},
-    math::{Dir3, Quat, USizeVec2, Vec2, Vec3, usizevec2, vec2, vec3},
+    math::{Dir3, EulerRot, Quat, USizeVec2, Vec2, Vec3, usizevec2, vec2, vec3},
     transform::components::Transform,
 };
 
@@ -25,6 +26,8 @@ pub const MAX_HAND_HOLD_ANGLE: f32 = 30.0;
 pub const MANTLE_FORWARD_OFFSET: f32 = 0.5;
 pub const MAX_MANTLE_DIST: f32 = 0.5;
 
+pub const PLAYER_CLIMB_CORNER_CHECK_OFFSET: Vec3 = vec3(0.25, 0.0, 1.15);
+
 #[derive(Clone, Copy)]
 pub enum ClimbType {
     Start,
@@ -32,6 +35,10 @@ pub enum ClimbType {
     Down,
     Right,
     Left,
+    CornerInRight,
+    CornerInLeft,
+    CornerOutRight,
+    CornerOutLeft,
 }
 
 pub const HAND_HOLD_DETECTION_CONFIG_FORWARD: HandHoldDetectionConfig =
@@ -39,8 +46,27 @@ pub const HAND_HOLD_DETECTION_CONFIG_FORWARD: HandHoldDetectionConfig =
         1.5,
         0.01,
         0.5,
-        usizevec2(9, 25),
+        usizevec2(15, 25),
         vec2(1.0, 1.75),
+        vec3(0.0, 1.75, 0.0),
+    );
+pub const HAND_HOLD_DETECTION_CONFIG_CORNER_IN: HandHoldDetectionConfig =
+    HandHoldDetectionConfig::new(
+        0.75,
+        0.01,
+        0.5,
+        usizevec2(3, 25),
+        vec2(0.25, 1.75),
+        vec3(0.0, 1.75, 0.0),
+    );
+
+pub const HAND_HOLD_DETECTION_CONFIG_CORNER_OUT: HandHoldDetectionConfig =
+    HandHoldDetectionConfig::new(
+        1.5,
+        0.01,
+        0.5,
+        usizevec2(3, 25),
+        vec2(0.25, 1.75),
         vec3(0.0, 1.75, 0.0),
     );
 
@@ -52,7 +78,55 @@ pub const MANTLE_DETECTION_CONFIG: HandHoldDetectionConfig = HandHoldDetectionCo
     vec2(0.25, 1.0),
     vec3(0.0, 1.5, 0.0),
 );
+pub fn get_offseted_climb_pos_and_rot(
+    transform: &Single<&Transform, With<PlayerBody>>,
+    climb_type: ClimbType,
+) -> (Vec3, Quat) {
+    let euler_rot = transform.rotation.to_euler(EulerRot::YXZ);
 
+    match climb_type {
+        ClimbType::CornerInRight => (
+            transform.translation,
+            Quat::from_euler(
+                EulerRot::YXZ,
+                (euler_rot.0 - PI / 2.0).rem_euclid(PI * 2.0),
+                0.0,
+                0.0,
+            ),
+        ),
+        ClimbType::CornerInLeft => (
+            transform.translation,
+            Quat::from_euler(
+                EulerRot::YXZ,
+                (euler_rot.0 + PI / 2.0).rem_euclid(PI * 2.0),
+                0.0,
+                0.0,
+            ),
+        ),
+        ClimbType::CornerOutRight => (
+            transform.translation
+                + transform.right() * PLAYER_CLIMB_CORNER_CHECK_OFFSET.x
+                + transform.forward() * PLAYER_CLIMB_CORNER_CHECK_OFFSET.z,
+            Quat::from_euler(
+                EulerRot::YXZ,
+                (euler_rot.0 + PI / 2.0).rem_euclid(PI * 2.0),
+                0.0,
+                0.0,
+            ),
+        ),
+        ClimbType::CornerOutLeft => (
+            transform.translation - transform.right() * PLAYER_CLIMB_CORNER_CHECK_OFFSET.x
+                + transform.forward() * PLAYER_CLIMB_CORNER_CHECK_OFFSET.z,
+            Quat::from_euler(
+                EulerRot::YXZ,
+                (euler_rot.0 - PI / 2.0).rem_euclid(PI * 2.0),
+                0.0,
+                0.0,
+            ),
+        ),
+        _ => (transform.translation, transform.rotation),
+    }
+}
 pub fn get_hand_hold<'a>(
     hand_holds: &'a Vec<HandHold>,
     transform: &Single<&Transform, With<PlayerBody>>,
@@ -64,6 +138,7 @@ pub fn get_hand_hold<'a>(
         ClimbType::Down => get_hand_hold_vertical(hand_holds, transform, false),
         ClimbType::Right => get_hand_hold_side(hand_holds, transform, true),
         ClimbType::Left => get_hand_hold_side(hand_holds, transform, false),
+        _ => get_hand_hold_corner(hand_holds, transform),
     }
 }
 fn get_hand_hold_start<'a>(
@@ -157,13 +232,46 @@ fn get_hand_hold_side<'a>(
 
         let dot = transform.right().dot(dir);
 
-        let valid = if right { dot > 0.1 } else { dot < 0.1 };
+        let valid = if right { dot > 0.01 } else { dot < -0.01 };
 
         if !valid {
             continue;
         }
 
         let dist_xz = (vec3(hand_hold.pos.x, 0.0, hand_hold.pos.z)
+            - vec3(player_hold_pos.x, 0.0, player_hold_pos.z))
+        .length();
+
+        let score = dist_xz - dist_y;
+
+        if score > best_score {
+            best_score = score;
+            best_hand_hold = Some(hand_hold);
+        }
+    }
+
+    best_hand_hold
+}
+fn get_hand_hold_corner<'a>(
+    hand_holds: &'a Vec<HandHold>,
+    transform: &Single<&Transform, With<PlayerBody>>,
+) -> Option<&'a HandHold> {
+    let mut best_hand_hold = None;
+    let mut best_score = f32::MIN;
+
+    let player_hold_pos = transform.translation
+        + transform.right() * PLAYER_CLIMB_POS_OFFSET.x
+        + transform.up() * PLAYER_CLIMB_POS_OFFSET.y
+        + transform.forward() * PLAYER_CLIMB_POS_OFFSET.z;
+
+    for hand_hold in hand_holds {
+        let dist_y = (hand_hold.pos.y - player_hold_pos.y).abs();
+
+        if dist_y > MAX_CLIMB_SIDE_Y_DIST {
+            continue;
+        }
+
+        let dist_xz = -(vec3(hand_hold.pos.x, 0.0, hand_hold.pos.z)
             - vec3(player_hold_pos.x, 0.0, player_hold_pos.z))
         .length();
 
@@ -381,5 +489,5 @@ impl HandHoldDetectionConfig {
     }
 }
 pub fn hand_holds_similar(a: &HandHold, b: &HandHold) -> bool {
-    (a.pos - b.pos).length_squared() < 0.1
+    (a.pos - b.pos).length() < 0.01
 }

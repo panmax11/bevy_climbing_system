@@ -82,12 +82,20 @@ fn setup_map(
         Collider::cuboid(2.5, 4.0, 2.5),
         Mesh3d(meshes.add(Cuboid::from_size(vec3(2.5, 4.0, 2.5)))),
         MeshMaterial3d(ledge_mat.clone()),
-        Transform::from_xyz(5.0, 2.0, 0.0).with_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            45.0,
-            0.0,
-            0.0,
-        )),
+        Transform::from_xyz(5.0, 2.0, 0.0),
+        CollisionLayers::new(
+            GameLayers::Ground,
+            [GameLayers::Default, GameLayers::Ground],
+        ),
+    ));
+
+    commands.spawn((
+        RigidBody::Static,
+        Friction::new(0.0),
+        Collider::cuboid(2.5, 4.0, 2.5),
+        Mesh3d(meshes.add(Cuboid::from_size(vec3(2.5, 4.0, 2.5)))),
+        MeshMaterial3d(ledge_mat.clone()),
+        Transform::from_xyz(7.5, 2.0, 2.5),
         CollisionLayers::new(
             GameLayers::Ground,
             [GameLayers::Default, GameLayers::Ground],

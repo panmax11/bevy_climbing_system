@@ -26,10 +26,12 @@ use bevy::{
 use crate::{
     GameLayers,
     climbing::{
-        ClimbType, HAND_HOLD_DETECTION_CONFIG_FORWARD, HandHold, MANTLE_DETECTION_CONFIG,
+        ClimbType, HAND_HOLD_DETECTION_CONFIG_CORNER_IN, HAND_HOLD_DETECTION_CONFIG_CORNER_OUT,
+        HAND_HOLD_DETECTION_CONFIG_FORWARD, HandHold, MANTLE_DETECTION_CONFIG,
         MANTLE_FORWARD_OFFSET, PLAYER_CLIMB_POS_LERP_RATE, PLAYER_CLIMB_POS_OFFSET,
         PLAYER_CLIMB_ROT_LERP_RATE, PLAYER_MANTLE_POS_LERP_RATE, generate_hand_holds,
-        get_hand_hold, get_mantle_hand_hold, get_mantle_hand_holds, hand_holds_similar,
+        get_hand_hold, get_mantle_hand_hold, get_mantle_hand_holds, get_offseted_climb_pos_and_rot,
+        hand_holds_similar,
     },
 };
 
@@ -344,14 +346,14 @@ fn climb_idle(
             return;
         }
 
-        let hand_holds = &generate_hand_holds(
+        let hand_holds = generate_hand_holds(
             HAND_HOLD_DETECTION_CONFIG_FORWARD,
             transform.translation,
             transform.rotation,
             &query,
         );
 
-        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Up) {
+        if let Some(hand_hold) = get_hand_hold(&hand_holds, &transform, ClimbType::Up) {
             if let Some(b) = current_hand_hold.0 {
                 if !hand_holds_similar(hand_hold, &b) {
                     current_hand_hold.0 = Some(*hand_hold);
@@ -363,14 +365,14 @@ fn climb_idle(
     }
 
     if input_dir.0.y < -0.1 {
-        let hand_holds = &generate_hand_holds(
+        let hand_holds = generate_hand_holds(
             HAND_HOLD_DETECTION_CONFIG_FORWARD,
             transform.translation,
             transform.rotation,
             &query,
         );
 
-        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Down) {
+        if let Some(hand_hold) = get_hand_hold(&hand_holds, &transform, ClimbType::Down) {
             if let Some(b) = current_hand_hold.0 {
                 if !hand_holds_similar(hand_hold, &b) {
                     current_hand_hold.0 = Some(*hand_hold);
@@ -382,14 +384,50 @@ fn climb_idle(
     }
 
     if input_dir.0.x > 0.1 {
-        let hand_holds = &generate_hand_holds(
+        let hand_holds = generate_hand_holds(
             HAND_HOLD_DETECTION_CONFIG_FORWARD,
             transform.translation,
             transform.rotation,
             &query,
         );
 
-        if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Right) {
+        if let Some(hand_hold) = get_hand_hold(&hand_holds, &transform, ClimbType::Right) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+
+        let corner_in_hand_holds = {
+            let (pos, rot) = get_offseted_climb_pos_and_rot(&transform, ClimbType::CornerInRight);
+            generate_hand_holds(HAND_HOLD_DETECTION_CONFIG_CORNER_IN, pos, rot, &query)
+        };
+
+        if let Some(hand_hold) =
+            get_hand_hold(&corner_in_hand_holds, &transform, ClimbType::CornerInRight)
+        {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+
+        let corner_out_hand_holds = {
+            let (pos, rot) = get_offseted_climb_pos_and_rot(&transform, ClimbType::CornerOutRight);
+            generate_hand_holds(HAND_HOLD_DETECTION_CONFIG_CORNER_OUT, pos, rot, &query)
+        };
+
+        if let Some(hand_hold) = get_hand_hold(
+            &corner_out_hand_holds,
+            &transform,
+            ClimbType::CornerOutRight,
+        ) {
             if let Some(b) = current_hand_hold.0 {
                 if !hand_holds_similar(hand_hold, &b) {
                     current_hand_hold.0 = Some(*hand_hold);
@@ -409,6 +447,42 @@ fn climb_idle(
         );
 
         if let Some(hand_hold) = get_hand_hold(hand_holds, &transform, ClimbType::Left) {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                } else {
+                    println!("left works!!!!!!");
+                }
+            }
+        }
+
+        let corner_in_hand_holds = {
+            let (pos, rot) = get_offseted_climb_pos_and_rot(&transform, ClimbType::CornerInLeft);
+            generate_hand_holds(HAND_HOLD_DETECTION_CONFIG_CORNER_IN, pos, rot, &query)
+        };
+
+        if let Some(hand_hold) =
+            get_hand_hold(&corner_in_hand_holds, &transform, ClimbType::CornerInLeft)
+        {
+            if let Some(b) = current_hand_hold.0 {
+                if !hand_holds_similar(hand_hold, &b) {
+                    current_hand_hold.0 = Some(*hand_hold);
+                    state.0 = PlayerMovementState::Climbing;
+                    return;
+                }
+            }
+        }
+
+        let corner_out_hand_holds = {
+            let (pos, rot) = get_offseted_climb_pos_and_rot(&transform, ClimbType::CornerOutLeft);
+            generate_hand_holds(HAND_HOLD_DETECTION_CONFIG_CORNER_OUT, pos, rot, &query)
+        };
+
+        if let Some(hand_hold) =
+            get_hand_hold(&corner_out_hand_holds, &transform, ClimbType::CornerOutLeft)
+        {
             if let Some(b) = current_hand_hold.0 {
                 if !hand_holds_similar(hand_hold, &b) {
                     current_hand_hold.0 = Some(*hand_hold);
@@ -567,9 +641,33 @@ fn draw_gizmos(
     transform: Single<&Transform, With<PlayerBody>>,
     mut gizmos: Gizmos,
     query: SpatialQuery,
-    linear_vel: Single<&LinearVelocity, With<PlayerBody>>,
-    state: Single<&PlayerMovementStateComponent, With<PlayerBody>>,
+    current: Single<&CurrentHandHold, With<PlayerBody>>,
 ) {
+    /*
+    let (pos, rot) = get_offseted_climb_pos_and_rot(&transform, ClimbType::CornerOutRight);
+
+    let dir = rot.mul_vec3(Vec3::NEG_Z);
+
+    gizmos.sphere(
+        Isometry3d::from_translation(pos),
+        1.0,
+        Color::srgb_u8(0, 255, 0),
+    );
+
+    gizmos.ray(pos, dir, Color::srgb_u8(0, 0, 255));
+
+    let points = generate_hand_holds(HAND_HOLD_DETECTION_CONFIG_CORNER_OUT, pos, rot, &query);
+
+    for point in points {
+        gizmos.sphere(
+            Isometry3d::from_translation(point.pos),
+            0.5,
+            Color::srgb_u8(255, 0, 0),
+        );
+    }
+    */
+
+    /*
     let points = generate_hand_holds(
         HAND_HOLD_DETECTION_CONFIG_FORWARD,
         transform.translation,
@@ -577,17 +675,22 @@ fn draw_gizmos(
         &query,
     );
 
-    for point in points {
+    let point = get_hand_hold(&points, &transform, ClimbType::Right);
+
+    if let Some(a) = point {
         gizmos.sphere(
-            Isometry3d::from_translation(point.pos),
+            Isometry3d::from_translation(a.pos),
             0.1,
             Color::srgb_u8(255, 0, 0),
         );
     }
 
-    gizmos.ray(
-        transform.translation,
-        transform.forward().as_vec3(),
-        Color::srgb_u8(0, 255, 0),
-    );
+    if let Some(b) = current.0 {
+        gizmos.sphere(
+            Isometry3d::from_translation(b.pos),
+            0.1,
+            Color::srgb_u8(0, 255, 0),
+        );
+    }
+    */
 }
