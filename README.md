@@ -12,7 +12,7 @@ I made a similar project a year ago, but that was in Unity engine, and the code 
 ~~Dropping off ledges~~  
 Jump off a ledge  
 ~~Climbing and shimmy'ing on a ledge~~  
-Ability to shimmy around or in a corner (e.g. switching sides)  
+~~Ability to shimmy around or in a corner (e.g. switching sides)~~  
 ~~Mantle onto an object~~  
 Animated Arms Model  
 Smaller tweaks  
